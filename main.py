@@ -1009,77 +1009,110 @@ def compute_stochastic(high, low, close, n=14, d=3):
     return k, d_line
 
 def compute_volume_profile(df, period=20):
-    volume = df['volume'].astype(float)
-    high = df['high'].astype(float)
-    low = df['low'].astype(float)
-    
-    price_range = high - low
-    volume_per_price = volume / (price_range.replace(0, 1e-12))
-    
-    return {
-        'volume_ma': sma(volume, period),
-        'volume_spike': volume > sma(volume, period) * 1.5,
-        'volume_trend': 'up' if volume.iloc[-1] > volume.iloc[-2] else 'down'
-    }
+    """حساب مؤشرات الحجم - الإصلاح: إرجاع قيم مفردة بدلاً من Series"""
+    try:
+        volume = df['volume'].astype(float)
+        high = df['high'].astype(float)
+        low = df['low'].astype(float)
+        
+        price_range = high - low
+        volume_per_price = volume / (price_range.replace(0, 1e-12))
+        
+        volume_ma = sma(volume, period)
+        
+        # إرجاع قيم مفردة بدلاً من Series
+        if len(volume) > 0 and len(volume_ma) > 0:
+            volume_spike = bool(volume.iloc[-1] > volume_ma.iloc[-1] * 1.5)
+        else:
+            volume_spike = False
+            
+        if len(volume) >= 2:
+            volume_trend = 'up' if volume.iloc[-1] > volume.iloc[-2] else 'down'
+        else:
+            volume_trend = 'down'
+        
+        return {
+            'volume_ma': float(volume_ma.iloc[-1]) if len(volume_ma) > 0 else 0.0,
+            'volume_spike': volume_spike,
+            'volume_trend': volume_trend
+        }
+    except Exception as e:
+        log_w(f"compute_volume_profile error: {e}")
+        return {'volume_ma': 0.0, 'volume_spike': False, 'volume_trend': 'down'}
 
 def compute_momentum_indicators(df):
-    close = df['close'].astype(float)
-    high = df['high'].astype(float)
-    low = df['low'].astype(float)
-    
-    roc = ((close - close.shift(5)) / close.shift(5)) * 100
-    price_accel = close.diff().diff()
-    volatility = high - low
-    
-    return {
-        'roc': roc.iloc[-1] if len(roc) > 0 else 0,
-        'price_accel': price_accel.iloc[-1] if len(price_accel) > 0 else 0,
-        'volatility': volatility.iloc[-1] if len(volatility) > 0 else 0,
-        'volatility_ma': sma(volatility, 20).iloc[-1] if len(volatility) >= 20 else 0
-    }
+    try:
+        close = df['close'].astype(float)
+        high = df['high'].astype(float)
+        low = df['low'].astype(float)
+        
+        if len(close) < 6:
+            return {'roc': 0, 'price_accel': 0, 'volatility': 0, 'volatility_ma': 0}
+        
+        roc = ((close.iloc[-1] - close.iloc[-5]) / close.iloc[-5]) * 100 if len(close) >= 5 else 0
+        price_accel = close.diff().diff()
+        volatility = high - low
+        
+        volatility_ma = 0
+        if len(volatility) >= 20:
+            volatility_ma = sma(volatility, 20).iloc[-1]
+        
+        return {
+            'roc': roc,
+            'price_accel': price_accel.iloc[-1] if len(price_accel) > 0 else 0,
+            'volatility': volatility.iloc[-1] if len(volatility) > 0 else 0,
+            'volatility_ma': volatility_ma
+        }
+    except Exception as e:
+        log_w(f"compute_momentum_indicators error: {e}")
+        return {'roc': 0, 'price_accel': 0, 'volatility': 0, 'volatility_ma': 0}
 
 def compute_trend_strength(df, ind):
-    close = df['close'].astype(float)
-    adx = safe_get(ind, 'adx', 0)
-    plus_di = safe_get(ind, 'plus_di', 0)
-    minus_di = safe_get(ind, 'minus_di', 0)
-    
-    momentum_5 = ((close.iloc[-1] - close.iloc[-5]) / close.iloc[-5]) * 100 if len(close) >= 5 else 0
-    momentum_10 = ((close.iloc[-1] - close.iloc[-10]) / close.iloc[-10]) * 100 if len(close) >= 10 else 0
-    
-    trend_consistency = 0
-    if len(close) >= 10:
-        up_days = sum(close.diff().tail(10) > 0)
-        down_days = sum(close.diff().tail(10) < 0)
-        trend_consistency = max(up_days, down_days) / 10.0
-    
-    if adx > 40 and abs(momentum_5) > 3.0 and trend_consistency > 0.7:
-        strength = "very_strong"
-        multiplier = 2.0
-    elif adx > 30 and abs(momentum_5) > 2.0 and trend_consistency > 0.6:
-        strength = "strong"
-        multiplier = 1.5
-    elif adx > 25 and abs(momentum_5) > 1.0:
-        strength = "moderate"
-        multiplier = 1.2
-    elif adx > 20:
-        strength = "weak"
-        multiplier = 1.0
-    else:
-        strength = "no_trend"
-        multiplier = 0.8
-    
-    direction = "up" if plus_di > minus_di else "down"
-    
-    return {
-        "strength": strength,
-        "direction": direction,
-        "multiplier": multiplier,
-        "adx": adx,
-        "momentum_5": momentum_5,
-        "momentum_10": momentum_10,
-        "consistency": trend_consistency
-    }
+    try:
+        close = df['close'].astype(float)
+        adx = safe_get(ind, 'adx', 0)
+        plus_di = safe_get(ind, 'plus_di', 0)
+        minus_di = safe_get(ind, 'minus_di', 0)
+        
+        momentum_5 = ((close.iloc[-1] - close.iloc[-5]) / close.iloc[-5]) * 100 if len(close) >= 5 else 0
+        momentum_10 = ((close.iloc[-1] - close.iloc[-10]) / close.iloc[-10]) * 100 if len(close) >= 10 else 0
+        
+        trend_consistency = 0
+        if len(close) >= 10:
+            up_days = sum(close.diff().tail(10) > 0)
+            down_days = sum(close.diff().tail(10) < 0)
+            trend_consistency = max(up_days, down_days) / 10.0
+        
+        if adx > 40 and abs(momentum_5) > 3.0 and trend_consistency > 0.7:
+            strength = "very_strong"
+            multiplier = 2.0
+        elif adx > 30 and abs(momentum_5) > 2.0 and trend_consistency > 0.6:
+            strength = "strong"
+            multiplier = 1.5
+        elif adx > 25 and abs(momentum_5) > 1.0:
+            strength = "moderate"
+            multiplier = 1.2
+        elif adx > 20:
+            strength = "weak"
+            multiplier = 1.0
+        else:
+            strength = "no_trend"
+            multiplier = 0.8
+        
+        direction = "up" if plus_di > minus_di else "down"
+        
+        return {
+            "strength": strength,
+            "direction": direction,
+            "multiplier": multiplier,
+            "adx": adx,
+            "momentum_5": momentum_5,
+            "momentum_10": momentum_10,
+            "consistency": trend_consistency
+        }
+    except Exception as e:
+        log_w(f"compute_trend_strength error: {e}")
+        return {"strength": "no_trend", "direction": "neutral", "multiplier": 0.8, "adx": 0, "momentum_5": 0, "momentum_10": 0, "consistency": 0}
 
 def rsi_ma_context(df):
     if len(df) < max(RSI_MA_LEN, 14):
@@ -1221,23 +1254,30 @@ def _displacement_gz(closes):
     return abs(closes.iloc[-1] - closes.iloc[-2]) / max(recent_std, 1e-9)
 
 def _last_impulse_gz(df):
-    h = df["high"].astype(float)
-    l = df["low"].astype(float)
-    
-    lookback = min(120, len(df))
-    recent_highs = h.tail(lookback)
-    recent_lows = l.tail(lookback)
-    
-    hh_idx = recent_highs.idxmax()
-    ll_idx = recent_lows.idxmin()
-    
-    hh = recent_highs.max()
-    ll = recent_lows.min()
-    
-    if hh_idx < ll_idx:
-        return ("down", hh_idx, ll_idx, hh, ll)
-    else:
-        return ("up", ll_idx, hh_idx, ll, hh)
+    try:
+        h = df["high"].astype(float)
+        l = df["low"].astype(float)
+        
+        lookback = min(120, len(df))
+        if lookback < 2:
+            return None
+            
+        recent_highs = h.tail(lookback)
+        recent_lows = l.tail(lookback)
+        
+        hh_idx = recent_highs.idxmax()
+        ll_idx = recent_lows.idxmin()
+        
+        hh = recent_highs.max()
+        ll = recent_lows.min()
+        
+        if hh_idx < ll_idx:
+            return ("down", hh_idx, ll_idx, hh, ll)
+        else:
+            return ("up", ll_idx, hh_idx, ll, hh)
+    except Exception as e:
+        log_w(f"_last_impulse_gz error: {e}")
+        return None
 
 def golden_zone_check(df, ind=None, side_hint=None):
     if len(df) < 60:
@@ -1406,9 +1446,9 @@ def super_council_ai_enhanced(df):
         
         # إصلاح: استخدام last_scalar بدلاً من الوصول المباشر
         macd, macd_signal, macd_hist = compute_macd(df['close'].astype(float))
-        macd_current = last_scalar(macd)
-        macd_signal_current = last_scalar(macd_signal) 
-        macd_hist_current = last_scalar(macd_hist)
+        macd_current = last_scalar(macd, 0.0)
+        macd_signal_current = last_scalar(macd_signal, 0.0) 
+        macd_hist_current = last_scalar(macd_hist, 0.0)
         
         macd_bullish = macd_current > macd_signal_current and macd_hist_current > 0
         macd_bearish = macd_current < macd_signal_current and macd_hist_current < 0
@@ -1416,8 +1456,8 @@ def super_council_ai_enhanced(df):
         bb_upper, bb_middle, bb_lower = compute_bollinger_bands(df['close'].astype(float))
         current_price = float(df['close'].iloc[-1])
         
-        bb_upper_val = last_scalar(bb_upper)
-        bb_lower_val = last_scalar(bb_lower)
+        bb_upper_val = last_scalar(bb_upper, current_price)
+        bb_lower_val = last_scalar(bb_lower, current_price)
         
         if bb_upper_val != bb_lower_val:
             bb_position = (current_price - bb_lower_val) / (bb_upper_val - bb_lower_val)
@@ -1425,8 +1465,8 @@ def super_council_ai_enhanced(df):
             bb_position = 0.5
         
         stoch_k, stoch_d = compute_stochastic(df['high'].astype(float), df['low'].astype(float), df['close'].astype(float))
-        stoch_k_val = last_scalar(stoch_k)
-        stoch_d_val = last_scalar(stoch_d)
+        stoch_k_val = last_scalar(stoch_k, 50.0)
+        stoch_d_val = last_scalar(stoch_d, 50.0)
         
         stoch_bullish = stoch_k_val > stoch_d_val and stoch_k_val < 80
         stoch_bearish = stoch_k_val < stoch_d_val and stoch_k_val > 20
@@ -1508,8 +1548,8 @@ def super_council_ai_enhanced(df):
 
         # 1. تحليل الزخم المبكر
         if TREND_EARLY_DETECTION:
-            momentum_accel = safe_get(momentum, 'price_accel', 0.0)
-            momentum_roc = safe_get(momentum, 'roc', 0.0)
+            momentum_accel = momentum.get('price_accel', 0.0)
+            momentum_roc = momentum.get('roc', 0.0)
             
             if momentum_accel > 0 and momentum_roc > 0.5:
                 score_b += WEIGHT_MOMENTUM * 1.5
@@ -1620,11 +1660,11 @@ def super_council_ai_enhanced(df):
                 logs.append(f"🌊 تدفق بيعي قوي (z: {delta_z:.2f})")
 
         # 8. مؤشر MACD المتقدم
-        if macd_bullish and macd_hist_current > last_scalar(macd_hist.shift(1) if hasattr(macd_hist, 'shift') else 0):
+        if macd_bullish and macd_hist_current > last_scalar(macd_hist.shift(1) if hasattr(macd_hist, 'shift') else 0, 0.0):
             score_b += WEIGHT_MACD * 1.5
             votes_b += 2
             logs.append("📈 MACD صاعد متسارع")
-        elif macd_bearish and macd_hist_current < last_scalar(macd_hist.shift(1) if hasattr(macd_hist, 'shift') else 0):
+        elif macd_bearish and macd_hist_current < last_scalar(macd_hist.shift(1) if hasattr(macd_hist, 'shift') else 0, 0.0):
             score_s += WEIGHT_MACD * 1.5
             votes_s += 2
             logs.append("📉 MACD هابط متسارع")
