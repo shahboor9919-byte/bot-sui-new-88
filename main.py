@@ -834,7 +834,7 @@ def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
         flow = compute_flow_metrics(df)
         cv = council_votes_pro(df)
         mode = decide_strategy_mode(df)
-        gz = golden_zone_check(df, {"adx": cv["ind"].get("adx", 0)}, "buy" if cv["b"]>=cv["s"] else "sell")
+        gz = golden_zone_check(df, {"adx": safe_get(cv.get("ind", {}), 'adx', 0)}, "buy" if cv["b"]>=cv["s"] else "sell")
 
         bal = None; cpnl = None
         if callable(balance_fn):
@@ -860,8 +860,8 @@ def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
         side_hint = "BUY" if cv["b"]>=cv["s"] else "SELL"
         dash = (f"DASH → hint-{side_hint} | Council BUY({cv['b']},{cv['score_b']:.1f}) "
                 f"SELL({cv['s']},{cv['score_s']:.1f}) | "
-                f"RSI={safe_get(cv['ind'],'rsi',0):.1f} ADX={safe_get(cv['ind'],'adx',0):.1f} "
-                f"DI={safe_get(cv['ind'],'di_spread',0):.1f} | Confidence: {cv.get('confidence',0):.1f}")
+                f"RSI={safe_get(cv.get('ind', {}),'rsi',0):.1f} ADX={safe_get(cv.get('ind', {}),'adx',0):.1f} "
+                f"DI={safe_get(cv.get('ind', {}),'di_spread',0):.1f} | Confidence: {cv.get('confidence',0):.1f}")
 
         strat_icon = "⚡" if mode["mode"]=="scalp" else "📈" if mode["mode"]=="trend" else "ℹ️"
         strat = f"Strategy: {strat_icon} {mode['mode'].upper()}"
@@ -890,7 +890,7 @@ def emit_snapshots(exchange, symbol, df, balance_fn=None, pnl_fn=None):
             bm_imb = bm['imbalance'] if bm and bm.get('ok') else 1.0
             
             print(f"🧠 SNAP | {side_hint} | votes={cv['b']}/{cv['s']} score={cv['score_b']:.1f}/{cv['score_s']:.1f} "
-                  f"| ADX={safe_get(cv['ind'],'adx',0):.1f} DI={safe_get(cv['ind'],'di_spread',0):.1f} | "
+                  f"| ADX={safe_get(cv.get('ind', {}),'adx',0):.1f} DI={safe_get(cv.get('ind', {}),'di_spread',0):.1f} | "
                   f"z={flow_z:.2f} | imb={bm_imb:.2f}{gz_snap_note}", 
                   flush=True)
             
@@ -949,10 +949,20 @@ def compute_volume_profile(df, period=20):
     price_range = high - low
     volume_per_price = volume / (price_range.replace(0, 1e-12))
     
+    volume_ma = sma(volume, period)
+    
+    # استخراج القيم الأخيرة
+    volume_ma_last = float(volume_ma.iloc[-1]) if len(volume_ma) > 0 else 0
+    volume_last = float(volume.iloc[-1]) if len(volume) > 0 else 0
+    volume_spike = volume_last > volume_ma_last * 1.5
+    
+    volume_prev = float(volume.iloc[-2]) if len(volume) >= 2 else 0
+    volume_trend = 'up' if volume_last > volume_prev else 'down'
+    
     return {
-        'volume_ma': sma(volume, period),
-        'volume_spike': volume > sma(volume, period) * 1.5,
-        'volume_trend': 'up' if float(volume.iloc[-1]) > float(volume.iloc[-2]) else 'down'
+        'volume_ma': volume_ma_last,
+        'volume_spike': volume_spike,
+        'volume_trend': volume_trend
     }
 
 def compute_momentum_indicators(df):
@@ -960,15 +970,32 @@ def compute_momentum_indicators(df):
     high = df['high'].astype(float)
     low = df['low'].astype(float)
     
-    roc = ((close - close.shift(5)) / close.shift(5)) * 100
-    price_accel = close.diff().diff()
-    volatility = high - low
+    if len(close) >= 5:
+        roc = ((float(close.iloc[-1]) - float(close.iloc[-5])) / float(close.iloc[-5])) * 100
+    else:
+        roc = 0
+    
+    if len(close) >= 3:
+        price_accel = float(close.iloc[-1]) - 2*float(close.iloc[-2]) + float(close.iloc[-3])
+    else:
+        price_accel = 0
+    
+    if len(high) > 0 and len(low) > 0:
+        volatility = float(high.iloc[-1]) - float(low.iloc[-1])
+    else:
+        volatility = 0
+    
+    if len(high) >= 20 and len(low) >= 20:
+        volatility_series = high.astype(float) - low.astype(float)
+        volatility_ma = float(volatility_series.rolling(20).mean().iloc[-1])
+    else:
+        volatility_ma = volatility
     
     return {
-        'roc': float(roc.iloc[-1]) if len(roc) > 0 else 0,
-        'price_accel': float(price_accel.iloc[-1]) if len(price_accel) > 0 else 0,
-        'volatility': float(volatility.iloc[-1]) if len(volatility) > 0 else 0,
-        'volatility_ma': float(sma(volatility, 20).iloc[-1]) if len(volatility) >= 20 else 0
+        'roc': roc,
+        'price_accel': price_accel,
+        'volatility': volatility,
+        'volatility_ma': volatility_ma
     }
 
 def compute_trend_strength(df, ind):
@@ -977,13 +1004,21 @@ def compute_trend_strength(df, ind):
     plus_di = safe_get(ind, 'plus_di', 0)
     minus_di = safe_get(ind, 'minus_di', 0)
     
-    momentum_5 = ((float(close.iloc[-1]) - float(close.iloc[-5])) / float(close.iloc[-5])) * 100 if len(close) >= 5 else 0
-    momentum_10 = ((float(close.iloc[-1]) - float(close.iloc[-10])) / float(close.iloc[-10])) * 100 if len(close) >= 10 else 0
+    if len(close) >= 5:
+        momentum_5 = ((float(close.iloc[-1]) - float(close.iloc[-5])) / float(close.iloc[-5])) * 100
+    else:
+        momentum_5 = 0
+    
+    if len(close) >= 10:
+        momentum_10 = ((float(close.iloc[-1]) - float(close.iloc[-10])) / float(close.iloc[-10])) * 100
+    else:
+        momentum_10 = 0
     
     trend_consistency = 0
     if len(close) >= 10:
-        up_days = sum(close.diff().tail(10) > 0)
-        down_days = sum(close.diff().tail(10) < 0)
+        diff = close.diff().tail(10)
+        up_days = sum(diff > 0)
+        down_days = sum(diff < 0)
         trend_consistency = max(up_days, down_days) / 10.0
     
     if adx > 40 and abs(momentum_5) > 3.0 and trend_consistency > 0.7:
@@ -2330,8 +2365,8 @@ def super_council_ai_enhanced(df):
 
         # 1. تحليل الزخم المبكر
         if TREND_EARLY_DETECTION:
-            momentum_accel = safe_get(momentum, 'price_accel', 0.0)
-            momentum_roc = safe_get(momentum, 'roc', 0.0)
+            momentum_accel = momentum.get('price_accel', 0.0)
+            momentum_roc = momentum.get('roc', 0.0)
             
             if momentum_accel > 0 and momentum_roc > 0.5:
                 score_b += WEIGHT_MOMENTUM * 1.5
@@ -2350,10 +2385,7 @@ def super_council_ai_enhanced(df):
             volume_spike = volume_profile.get('volume_spike', False)
             volume_trend = volume_profile.get('volume_trend', '')
             
-            # معالجة volume_spike إذا كان Series
-            if isinstance(volume_spike, pd.Series):
-                volume_spike = bool(volume_spike.iloc[-1])
-            
+            # volume_spike هو boolean بالفعل، volume_trend هو string
             if volume_spike and volume_trend == 'up':
                 if current_price > float(df['open'].iloc[-1]):
                     score_b += WEIGHT_VOLUME * 1.2
@@ -2546,10 +2578,29 @@ def super_council_ai_enhanced(df):
         }
     except Exception as e:
         log_w(f"super_council_ai_enhanced error: {e}")
+        import traceback
+        log_w(f"Traceback: {traceback.format_exc()}")
         return {"b":0,"s":0,"score_b":0.0,"score_s":0.0,"logs":[],"ind":{},"confidence":0.0}
 
-council_votes_pro_enhanced = enhanced_super_council_with_smc
-council_votes_pro = enhanced_super_council_with_smc
+def council_votes_pro(df):
+    """واجهة متوافقة مع الإصدار المحسن"""
+    try:
+        return enhanced_super_council_with_smc(df)
+    except Exception as e:
+        log_w(f"council_votes_pro error: {e}")
+        # Fallback to basic calculation
+        ind = compute_indicators(df)
+        adx = safe_get(ind, 'adx', 0)
+        plus_di = safe_get(ind, 'plus_di', 0)
+        minus_di = safe_get(ind, 'minus_di', 0)
+        di_spread = abs(plus_di - minus_di)
+        
+        if adx > 20 and plus_di > minus_di:
+            return {"b": 3, "s": 1, "score_b": 5.0, "score_s": 2.0, "ind": ind, "confidence": 0.6}
+        elif adx > 20 and minus_di > plus_di:
+            return {"b": 1, "s": 3, "score_b": 2.0, "score_s": 5.0, "ind": ind, "confidence": 0.6}
+        else:
+            return {"b": 0, "s": 0, "score_b": 0.0, "score_s": 0.0, "ind": ind, "confidence": 0.0}
 
 # =================== SUPER SCALP AI - ENHANCED VERSION ===================
 _last_scalp_ts = 0
@@ -2565,14 +2616,10 @@ def detect_super_scalp_opportunity(df, ind, flow, volume_profile, momentum, spre
 
         current_price = float(df['close'].iloc[-1])
         
-        # معالجة volume_spike لاستخراج قيمة مفردة
-        volume_spike_series = volume_profile.get('volume_spike', False)
-        if isinstance(volume_spike_series, pd.Series):
-            volume_spike = bool(volume_spike_series.iloc[-1])
-        else:
-            volume_spike = volume_spike_series
-        
+        # معالجة volume_profile لاستخراج قيمة مفردة
+        volume_spike = volume_profile.get('volume_spike', False)
         volume_trend = volume_profile.get('volume_trend', '')
+        
         volume_ok = volume_spike and volume_trend == 'up'
         
         momentum_ok = abs(momentum['roc']) > 0.3
@@ -2860,9 +2907,9 @@ def open_market_enhanced(side, qty, price):
     
     votes = snap["cv"]
     mode_data = decide_strategy_mode(df, 
-                                   adx=safe_get(votes["ind"], "adx", 0),
-                                   di_plus=safe_get(votes["ind"], "plus_di", 0),
-                                   di_minus=safe_get(votes["ind"], "minus_di", 0),
+                                   adx=safe_get(votes.get("ind", {}), "adx", 0),
+                                   di_plus=safe_get(votes.get("ind", {}), "plus_di", 0),
+                                   di_minus=safe_get(votes.get("ind", {}), "minus_di", 0),
                                    rsi_ctx=rsi_ma_context(df))
     
     mode = mode_data["mode"]
@@ -2906,7 +2953,7 @@ def open_market_enhanced(side, qty, price):
             "trail_tightened": False,
         })
         
-        STATE["last_ind"] = votes["ind"] if isinstance(votes,dict) else {}
+        STATE["last_ind"] = votes.get("ind", {}) if isinstance(votes,dict) else {}
         STATE["last_council"] = votes
         STATE["last_flow"] = compute_flow_metrics(df)
         STATE["last_spread_bps"] = orderbook_spread_bps()
@@ -3873,7 +3920,7 @@ def trade_loop_enhanced():
                 momentum = compute_momentum_indicators(df)
                 
                 STATE["last_ind"] = ind
-                STATE["last_council"] = council_votes_pro_enhanced(df)
+                STATE["last_council"] = council_votes_pro(df)
                 STATE["last_flow"] = flow_ctx
                 STATE["last_spread_bps"] = spread_bps
                 
@@ -3884,7 +3931,7 @@ def trade_loop_enhanced():
             if spread_bps is not None and spread_bps > MAX_SPREAD_BPS:
                 reason = f"spread too high ({fmt(spread_bps,2)}bps > {MAX_SPREAD_BPS})"
             
-            council_data = council_votes_pro_enhanced(df)
+            council_data = council_votes_pro(df)
             gz = council_data.get("gz")
             sig = None
 
